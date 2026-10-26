@@ -1,0 +1,114 @@
+import type { FunctionReference } from "convex/server";
+
+/**
+ * The functions every package-registry connector exposes, in the module `packageRegistry`
+ * (`src/component/packageRegistry.ts`), exactly as its generated `ComponentApi` must type them. An app holding
+ * a registry connector, such as `@jive-sh/server`, calls them the same way whichever registry it is.
+ *
+ * Jive provisions a new package in three steps, the first two through this contract:
+ * 1. `createPlaceholder`: the package comes into existence as an empty version published by a person's account.
+ * 2. `registerTrustedPublisher`: the package's CI workflow is allowed to publish it.
+ * 3. CI publishes every real version with its OIDC identity, outside this contract.
+ *
+ * Step 3 must follow step 2 promptly: npm deletes a trusted-publisher configuration whose first publish has not
+ * happened within 2 days (https://docs.npmjs.com/trusted-publishers#trusted-publisher-configuration-expiry), so
+ * a caller registers a publisher only when that workflow is about to run.
+ *
+ * All four are actions, since each calls the registry over the network. Each type is written out without
+ * intersections, the way Convex generates it, because the build compares the two for exact equality.
+ *
+ * A connector stores no credentials. A function that acts as an account is given that account's credential by its
+ * caller on every call (`account`), so one connector instance serves every person's account, and where
+ * credentials live, and how they are refreshed, is the caller's decision.
+ */
+export type PackageRegistryComponentApi<Name extends string | undefined = string | undefined> = {
+  packageRegistry: {
+    /** Whether the registry has any version of the package. */
+    packageExists: FunctionReference<"action", "internal", { packageName: string }, boolean, Name>;
+    /**
+     * Creates the package by publishing an empty placeholder version as `account`, so it exists for
+     * `registerTrustedPublisher`. A package that already exists is reported, not touched.
+     */
+    createPlaceholder: FunctionReference<"action", "internal", CreatePlaceholderArgs, CreatePlaceholderResult, Name>;
+    /** The trusted publishers configured on the package, as seen by an account that maintains it. The package must exist. */
+    listTrustedPublishers: FunctionReference<
+      "action",
+      "internal",
+      { packageName: string; account: RegistryAccount },
+      Array<TrustedPublisher>,
+      Name
+    >;
+    /**
+     * Lets one CI workflow publish the package with its OIDC identity instead of a token. Idempotent: an
+     * identical publisher already configured is reported, not added again. The package must exist.
+     */
+    registerTrustedPublisher: FunctionReference<
+      "action",
+      "internal",
+      RegisterTrustedPublisherArgs,
+      RegisterTrustedPublisherResult,
+      Name
+    >;
+  };
+};
+
+/**
+ * A person's own account on the registry, as the credential its connector acts with: for npm, a token from that
+ * person's login. How it was obtained and where it is kept are the caller's.
+ */
+export type RegistryAccount = { token: string };
+
+/**
+ * The registry wants the account's second factor before it acts. Call again with `oneTimePassword`: a code from
+ * the account's authenticator, or, when `approval` is present, the value `approval.resultUrl` answers with once
+ * someone (a person, or an automated browser holding the account's security key) has approved at
+ * `approval.pageUrl`. For npm, `resultUrl` answers 202 while approval is pending and 200 `{ token }` after.
+ */
+export type SecondFactorRequired = {
+  status: "secondFactorRequired";
+  approval?: { pageUrl: string; resultUrl: string };
+};
+
+export type CreatePlaceholderArgs = {
+  packageName: string;
+  /** The account that will own the package. */
+  account: RegistryAccount;
+  /** The account's second factor, when an earlier call answered `secondFactorRequired`. */
+  oneTimePassword?: string;
+};
+
+export type CreatePlaceholderResult =
+  | { status: "created"; version: string }
+  | { status: "alreadyExists" }
+  | SecondFactorRequired;
+
+export type RegisterTrustedPublisherArgs = {
+  packageName: string;
+  publisher: TrustedPublisherClaims;
+  /** An account that maintains the package. */
+  account: RegistryAccount;
+  /** The account's second factor, when an earlier call answered `secondFactorRequired`. */
+  oneTimePassword?: string;
+};
+
+export type RegisterTrustedPublisherResult =
+  | { status: "registered" }
+  | { status: "alreadyRegistered"; id: string }
+  | SecondFactorRequired;
+
+/** Which CI workflow a trusted publisher admits. GitHub Actions is the only provider so far. */
+export type TrustedPublisherClaims = {
+  provider: "github";
+  /** The repository the workflow runs in. */
+  repository: { owner: string; name: string };
+  /** The workflow's file name under `.github/workflows/`, e.g. "pipeline.yml". */
+  workflowFile: string;
+  /** The GitHub Actions environment the publishing job must run in, e.g. "latest"; absent admits any. */
+  environment?: string;
+};
+
+export type TrustedPublisher = {
+  /** The registry's id for this publisher. */
+  id: string;
+  claims: TrustedPublisherClaims;
+};
