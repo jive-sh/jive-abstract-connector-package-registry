@@ -10,7 +10,8 @@ export type {
   RegisterTrustedPublisherArgs,
   RegisterTrustedPublisherResult,
   RegistryAccount,
-  SecondFactorRequired,
+  RemoveTrustedPublisherArgs,
+  RemoveTrustedPublisherResult,
   TrustedPublisher,
   TrustedPublisherClaims,
 } from "./internal/public/contract";

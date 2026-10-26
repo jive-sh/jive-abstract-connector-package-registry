@@ -10,15 +10,17 @@ import type { FunctionReference } from "convex/server";
  * 2. `registerTrustedPublisher`: the package's CI workflow is allowed to publish it.
  * 3. CI publishes every real version with its OIDC identity, outside this contract.
  *
- * Step 3 must follow step 2 promptly: npm deletes a trusted-publisher configuration whose first publish has not
- * happened within 2 days (https://docs.npmjs.com/trusted-publishers#trusted-publisher-configuration-expiry), so
- * a caller registers a publisher only when that workflow is about to run.
+ * Step 3 must follow step 2 promptly: npm expires a trusted-publisher configuration whose first publish has not
+ * happened within 2 days; an expired one stays listed but "can no longer be used or edited", and the remedy is to
+ * delete it and create a new one (https://docs.npmjs.com/trusted-publishers#trusted-publisher-configuration-expiry).
+ * `listTrustedPublishers` says which publishers have published (`validated`) and `removeTrustedPublisher` deletes
+ * one, so a caller can replace a publisher that never published.
  *
- * All four are actions, since each calls the registry over the network. Each type is written out without
+ * All five are actions, since each calls the registry over the network. Each type is written out without
  * intersections, the way Convex generates it, because the build compares the two for exact equality.
  *
- * A connector stores no credentials. A function that acts as an account is given that account's credential by its
- * caller on every call (`account`), so one connector instance serves every person's account, and where
+ * A connector stores no credentials. A function that acts as an account is given that account's credentials by
+ * its caller on every call (`account`), so one connector instance serves every person's account, and where
  * credentials live, and how they are refreshed, is the caller's decision.
  */
 export type PackageRegistryComponentApi<Name extends string | undefined = string | undefined> = {
@@ -27,7 +29,8 @@ export type PackageRegistryComponentApi<Name extends string | undefined = string
     packageExists: FunctionReference<"action", "internal", { packageName: string }, boolean, Name>;
     /**
      * Creates the package by publishing an empty placeholder version as `account`, so it exists for
-     * `registerTrustedPublisher`. A package that already exists is reported, not touched.
+     * `registerTrustedPublisher`. A package that already exists is not touched: it is reported as `alreadyExists`
+     * when `account` maintains it, and as `maintainedByAnotherAccount` when it doesn't.
      */
     createPlaceholder: FunctionReference<"action", "internal", CreatePlaceholderArgs, CreatePlaceholderResult, Name>;
     /** The trusted publishers configured on the package, as seen by an account that maintains it. The package must exist. */
@@ -39,8 +42,9 @@ export type PackageRegistryComponentApi<Name extends string | undefined = string
       Name
     >;
     /**
-     * Lets one CI workflow publish the package with its OIDC identity instead of a token. Idempotent: an
-     * identical publisher already configured is reported, not added again. The package must exist.
+     * Lets one CI workflow publish the package with its OIDC identity instead of a token. Idempotent: a publisher
+     * with identical claims already configured is reported, not added again, whatever its status. The package
+     * must exist.
      */
     registerTrustedPublisher: FunctionReference<
       "action",
@@ -49,52 +53,62 @@ export type PackageRegistryComponentApi<Name extends string | undefined = string
       RegisterTrustedPublisherResult,
       Name
     >;
+    /** Deletes one trusted publisher, by the id `listTrustedPublishers` reported. One already gone is `notFound`. */
+    removeTrustedPublisher: FunctionReference<
+      "action",
+      "internal",
+      RemoveTrustedPublisherArgs,
+      RemoveTrustedPublisherResult,
+      Name
+    >;
   };
 };
 
 /**
- * A person's own account on the registry, as the credential its connector acts with: for npm, a token from that
- * person's login. How it was obtained and where it is kept are the caller's.
+ * A person's own account on the registry, as the credentials its connector acts with: for npm, a token from that
+ * person's login, and the account's second factor. How they were obtained and where they are kept are the caller's.
  */
-export type RegistryAccount = { token: string };
-
-/**
- * The registry wants the account's second factor before it acts. Call again with `oneTimePassword`: a code from
- * the account's authenticator, or, when `approval` is present, the value `approval.resultUrl` answers with once
- * someone (a person, or an automated browser holding the account's security key) has approved at
- * `approval.pageUrl`. For npm, `resultUrl` answers 202 while approval is pending and 200 `{ token }` after.
- */
-export type SecondFactorRequired = {
-  status: "secondFactorRequired";
-  approval?: { pageUrl: string; resultUrl: string };
+export type RegistryAccount = {
+  token: string;
+  /**
+   * What the connector answers with when the registry asks for the account's second factor. `totp` is the shared
+   * secret of an authenticator app (RFC 6238, base32 as authenticator apps show it); the connector computes the
+   * current code itself and never returns or logs it.
+   */
+  secondFactor: { type: "totp"; secret: string };
 };
 
 export type CreatePlaceholderArgs = {
   packageName: string;
   /** The account that will own the package. */
   account: RegistryAccount;
-  /** The account's second factor, when an earlier call answered `secondFactorRequired`. */
-  oneTimePassword?: string;
 };
 
 export type CreatePlaceholderResult =
   | { status: "created"; version: string }
   | { status: "alreadyExists" }
-  | SecondFactorRequired;
+  | { status: "maintainedByAnotherAccount" };
 
 export type RegisterTrustedPublisherArgs = {
   packageName: string;
   publisher: TrustedPublisherClaims;
   /** An account that maintains the package. */
   account: RegistryAccount;
-  /** The account's second factor, when an earlier call answered `secondFactorRequired`. */
-  oneTimePassword?: string;
 };
 
 export type RegisterTrustedPublisherResult =
   | { status: "registered" }
-  | { status: "alreadyRegistered"; id: string }
-  | SecondFactorRequired;
+  | { status: "alreadyRegistered"; id: string };
+
+export type RemoveTrustedPublisherArgs = {
+  packageName: string;
+  /** The registry's id for the publisher, as `listTrustedPublishers` reported it. */
+  id: string;
+  /** An account that maintains the package. */
+  account: RegistryAccount;
+};
+
+export type RemoveTrustedPublisherResult = { status: "removed" } | { status: "notFound" };
 
 /** Which CI workflow a trusted publisher admits. GitHub Actions is the only provider so far. */
 export type TrustedPublisherClaims = {
@@ -111,4 +125,10 @@ export type TrustedPublisher = {
   /** The registry's id for this publisher. */
   id: string;
   claims: TrustedPublisherClaims;
+  /**
+   * `validated`: a version of the package was published through it, so it no longer expires. `unvalidated`: no
+   * version was, so it is either waiting for its first publish or, past the registry's deadline (2 days on npm),
+   * expired. The registry does not say which; a caller that registered it knows when it did.
+   */
+  status: "validated" | "unvalidated";
 };

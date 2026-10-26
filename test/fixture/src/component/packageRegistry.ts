@@ -9,11 +9,9 @@ const claims = v.object({
 });
 
 /** The account an operation acts as; its caller supplies it on every call, so the component stores no credential. */
-const account = v.object({ token: v.string() });
-
-const secondFactorRequired = v.object({
-  status: v.literal("secondFactorRequired"),
-  approval: v.optional(v.object({ pageUrl: v.string(), resultUrl: v.string() })),
+const account = v.object({
+  token: v.string(),
+  secondFactor: v.object({ type: v.literal("totp"), secret: v.string() }),
 });
 
 function notImplemented(name: string): never {
@@ -29,11 +27,11 @@ export const packageExists = action({
 
 /** Creates the package by publishing an empty placeholder version as `account`; an existing package is reported, not touched. */
 export const createPlaceholder = action({
-  args: { packageName: v.string(), account, oneTimePassword: v.optional(v.string()) },
+  args: { packageName: v.string(), account },
   returns: v.union(
     v.object({ status: v.literal("created"), version: v.string() }),
     v.object({ status: v.literal("alreadyExists") }),
-    secondFactorRequired,
+    v.object({ status: v.literal("maintainedByAnotherAccount") }),
   ),
   handler: async () => notImplemented("createPlaceholder"),
 });
@@ -41,17 +39,23 @@ export const createPlaceholder = action({
 /** The trusted publishers configured on the package, as seen by an account that maintains it. */
 export const listTrustedPublishers = action({
   args: { packageName: v.string(), account },
-  returns: v.array(v.object({ id: v.string(), claims })),
+  returns: v.array(v.object({ id: v.string(), claims, status: v.union(v.literal("validated"), v.literal("unvalidated")) })),
   handler: async () => notImplemented("listTrustedPublishers"),
 });
 
 /** Lets one CI workflow publish the package with its OIDC identity; an identical publisher is reported, not added again. */
 export const registerTrustedPublisher = action({
-  args: { packageName: v.string(), publisher: claims, account, oneTimePassword: v.optional(v.string()) },
+  args: { packageName: v.string(), publisher: claims, account },
   returns: v.union(
     v.object({ status: v.literal("registered") }),
     v.object({ status: v.literal("alreadyRegistered"), id: v.string() }),
-    secondFactorRequired,
   ),
   handler: async () => notImplemented("registerTrustedPublisher"),
+});
+
+/** Deletes one trusted publisher by its id; one already gone is reported as notFound. */
+export const removeTrustedPublisher = action({
+  args: { packageName: v.string(), id: v.string(), account },
+  returns: v.union(v.object({ status: v.literal("removed") }), v.object({ status: v.literal("notFound") })),
+  handler: async () => notImplemented("removeTrustedPublisher"),
 });
