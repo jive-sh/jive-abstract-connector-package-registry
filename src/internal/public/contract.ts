@@ -65,40 +65,50 @@ export type PackageRegistryComponentApi<Name extends string | undefined = string
 };
 
 /**
- * A person's own account on the registry, as the credentials its connector acts with: for npm, a token from that
- * person's login, and the account's second factor. How they were obtained and where they are kept are the caller's.
+ * A person's own account on the registry, as the credential its connector acts with: for npm, a token from that
+ * person's login. How it was obtained and where it is kept are the caller's. No second factor is part of it: a
+ * write the registry guards with one answers `secondFactorRequired`, and a person answers it on the registry's own
+ * page (see `SecondFactorRequired`).
  */
 export type RegistryAccount = {
   token: string;
-  /**
-   * What the connector answers with when the registry asks for the account's second factor. `totp` is the shared
-   * secret of an authenticator app (RFC 6238, base32 as authenticator apps show it); the connector computes the
-   * current code itself and never returns or logs it.
-   */
-  secondFactor: { type: "totp"; secret: string };
 };
+
+/**
+ * The registry wants its second factor before this write. `pageUrl` is the registry's own page where the person
+ * whose account this is answers it (on npm, a page on www.npmjs.com, in that person's own browser); `resultUrl` is
+ * where the caller polls for the one-time password that answer produces (on npm, a registry endpoint), which it
+ * then passes back as `oneTimePassword` on the same call. The connector never answers a second factor itself.
+ */
+export type SecondFactorRequired = { status: "secondFactorRequired"; pageUrl: string; resultUrl: string };
 
 export type CreatePlaceholderArgs = {
   packageName: string;
   /** The account that will own the package. */
   account: RegistryAccount;
+  /** The one-time password a person's answer on `SecondFactorRequired.pageUrl` produced, when retrying. */
+  oneTimePassword?: string;
 };
 
 export type CreatePlaceholderResult =
   | { status: "created"; version: string }
   | { status: "alreadyExists" }
-  | { status: "maintainedByAnotherAccount" };
+  | { status: "maintainedByAnotherAccount" }
+  | SecondFactorRequired;
 
 export type RegisterTrustedPublisherArgs = {
   packageName: string;
   publisher: TrustedPublisherClaims;
   /** An account that maintains the package. */
   account: RegistryAccount;
+  /** The one-time password a person's answer on `SecondFactorRequired.pageUrl` produced, when retrying. */
+  oneTimePassword?: string;
 };
 
 export type RegisterTrustedPublisherResult =
   | { status: "registered" }
-  | { status: "alreadyRegistered"; id: string };
+  | { status: "alreadyRegistered"; id: string }
+  | SecondFactorRequired;
 
 export type RemoveTrustedPublisherArgs = {
   packageName: string;
@@ -106,9 +116,11 @@ export type RemoveTrustedPublisherArgs = {
   id: string;
   /** An account that maintains the package. */
   account: RegistryAccount;
+  /** The one-time password a person's answer on `SecondFactorRequired.pageUrl` produced, when retrying. */
+  oneTimePassword?: string;
 };
 
-export type RemoveTrustedPublisherResult = { status: "removed" } | { status: "notFound" };
+export type RemoveTrustedPublisherResult = { status: "removed" } | { status: "notFound" } | SecondFactorRequired;
 
 /** Which CI workflow a trusted publisher admits. GitHub Actions is the only provider so far. */
 export type TrustedPublisherClaims = {

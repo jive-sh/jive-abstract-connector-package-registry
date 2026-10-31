@@ -24,10 +24,10 @@ registers the publisher only when that workflow is about to run, and replaces on
 | Function | Arguments | Returns |
 | --- | --- | --- |
 | `packageExists` | `{ packageName }` | `boolean` |
-| `createPlaceholder` | `{ packageName, account }` | `{ status: "created", version }` \| `{ status: "alreadyExists" }` \| `{ status: "maintainedByAnotherAccount" }` |
+| `createPlaceholder` | `{ packageName, account, oneTimePassword? }` | `{ status: "created", version }` \| `{ status: "alreadyExists" }` \| `{ status: "maintainedByAnotherAccount" }` \| `secondFactorRequired` |
 | `listTrustedPublishers` | `{ packageName, account }` | `Array<{ id, claims, status: "validated" \| "unvalidated" }>` |
-| `registerTrustedPublisher` | `{ packageName, publisher, account }` | `{ status: "registered" }` \| `{ status: "alreadyRegistered", id }` |
-| `removeTrustedPublisher` | `{ packageName, id, account }` | `{ status: "removed" }` \| `{ status: "notFound" }` |
+| `registerTrustedPublisher` | `{ packageName, publisher, account, oneTimePassword? }` | `{ status: "registered" }` \| `{ status: "alreadyRegistered", id }` \| `secondFactorRequired` |
+| `removeTrustedPublisher` | `{ packageName, id, account, oneTimePassword? }` | `{ status: "removed" }` \| `{ status: "notFound" }` \| `secondFactorRequired` |
 
 - A **trusted publisher** lets one CI workflow publish the package with its OIDC identity instead of a token.
   `publisher` (and each listed publisher's `claims`) is `{ provider: "github", repository: { owner, name },
@@ -36,12 +36,15 @@ registers the publisher only when that workflow is about to run, and replaces on
 - A listed publisher is **`validated`** once a version of the package was published through it, after which it
   never expires, and **`unvalidated`** otherwise. An unvalidated publisher is either waiting for its first
   publish or expired; the registry does not say which, and the caller that registered it knows when it did.
-- **`account`** is `{ token, secondFactor: { type: "totp", secret } }`: one person's own account on the
-  registry. `token` is from that person's login; `secret` is the shared secret of the account's authenticator
-  app (RFC 6238, base32). When the registry asks for the second factor, the connector computes the current code
-  from it and retries; it never returns or logs the secret or a code. A connector stores no credentials;
-  whoever calls it passes the account to act as on every call, so one installed connector serves every person's
-  account, and where credentials are kept is the caller's decision.
+- **`account`** is `{ token }`: one person's own account on the registry, `token` from that person's login. A
+  connector stores no credentials; whoever calls it passes the account to act as on every call, so one installed
+  connector serves every person's account, and where credentials are kept is the caller's decision.
+- **A second factor is always answered by a person.** When the registry guards a write with its second factor,
+  the write answers `{ status: "secondFactorRequired", pageUrl, resultUrl }`: the person opens `pageUrl` (the
+  registry's own page, in their own browser) and answers there; the caller polls `resultUrl` for the one-time
+  password that produces and repeats the call with it as `oneTimePassword`. The connector never answers a second
+  factor itself and holds no second-factor secret. On npm one answer can cover several writes, through the page's
+  "skip two-factor authentication for the next 5 minutes" option.
 - **`createPlaceholder`** never touches an existing package. It answers `alreadyExists` only when `account`
   maintains the package, and `maintainedByAnotherAccount` when it doesn't, so a caller never goes on to
   register a publisher on someone else's package.
@@ -85,7 +88,5 @@ this package as a dev dependency, and nothing of it ships in an installing app.
 
 ## Open questions
 
-- A registry whose second factor is not an authenticator code (a security key alone, or browser approval) has
-  no answer in this contract yet.
 - GitHub Actions is the only trusted-publisher provider.
 - `packageExists` takes no account, so it sees public packages only.

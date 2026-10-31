@@ -12,6 +12,7 @@ export type {
   RegistryAccount,
   RemoveTrustedPublisherArgs,
   RemoveTrustedPublisherResult,
+  SecondFactorRequired,
   TrustedPublisher,
   TrustedPublisherClaims,
 } from "./internal/public/contract";
